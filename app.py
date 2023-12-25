@@ -1,132 +1,85 @@
-from flask import Flask, request, jsonify
 import os
 import dotenv
 import openai
 import pinecone
 import PyPDF2
 
-app = Flask(__name__)
-
 # Load environment variables
-dotenv.load_dotenv(dotenv_path="./.env.local")
+dotenv.load_dotenv(dotenv_path="./.env")
 
-# Initialize OpenAI and Pinecone
-openai.api_key = os.getenv("gpt_api_secret")
-pinecone.init(api_key=os.getenv("pinecone_api_key"),
-              environment="us-west1-gcp-free")
+# Initialize OpenAI and Pinecone with API keys
+openai.api_key = os.getenv("OPENAI_API_SECRET")
+pinecone.init(api_key=os.getenv("PINECONE_API_KEY"), environment="us-west1-gcp-free")
 
-# Global variables to store data between requests
-chunks = []
-index = None
-embed_model = "text-embedding-ada-002"
+# Display Pinecone user details
+print(pinecone.whoami())
 
-@app.route('/api/process', methods=['POST'])
-def process_pdf():
-    global chunks, index
+# Define paths and queries
+PDF_PATH = "/Users/nivix047/Desktop/mongoCRUD.pdf"
+QUERY = "What do $gt and $gte do in MongoDB?"
 
-    try:
-        # Extract the PDF path from the request
-        pdf_path = request.json.get('pdf_path')
+# Function to generate completions using OpenAI
+def generate_completion(prompt):
+    response = openai.Completion.create(
+        engine='text-davinci-003',
+        prompt=prompt,
+        temperature=0,
+        max_tokens=400,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
+        stop=None
+    )
+    return response['choices'][0]['text'].strip()
 
-        # Process the PDF file
-        text = extract_text_from_pdf(pdf_path)
+# Function to retrieve text based on a query
+def retrieve_text(query, embed_model, index):
+    response = openai.Embedding.create(input=[query], engine=embed_model)
+    query_embedding = response['data'][0]['embedding']
+    search_result = index.query(query_embedding, top_k=1, include_metadata=True)
+    context = search_result['matches'][0]['metadata']['text']
+    prompt = f"Answer the question based on the context below.\n\nContext:\n{context}\n\nQuestion: {query}\n\nAnswer:"
+    return prompt
 
-        # Break the extracted text into chunks
-        chunks = break_into_chunks(text)
-
-        # Create embeddings for the chunks and upsert to Pinecone
-        index = create_and_upsert_embeddings(chunks)
-
-        return jsonify({"message": "PDF processed and data upserted to Pinecone"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/retrieve', methods=['GET'])
-def retrieve_answer():
-    try:
-        query = request.args.get('query')
-        query_with_context = generate_query_with_context(query)
-        answer = complete(query_with_context)
-        return jsonify({"answer": answer})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# Function to extract text from a PDF
 def extract_text_from_pdf(pdf_path):
-    try:
-        with open(pdf_path, 'rb') as pdf_file_obj:
-            pdf_reader = PyPDF2.PdfReader(pdf_file_obj)
-            text = ""
-            for page_num in range(len(pdf_reader.pages)):
-                page_obj = pdf_reader.pages[page_num]
-                text += page_obj.extract_text()
-        return text
-    except Exception as e:
-        raise RuntimeError(f"Error extracting text from PDF: {e}")
+    with open(pdf_path, 'rb') as pdf_file:
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+    return text
 
-def break_into_chunks(text, chunk_size=10000, overlap_size=5000):
-    try:
-        chunks = []
-        for i in range(0, len(text), chunk_size - overlap_size):
-            chunks.append(text[i:i + chunk_size])
-        return chunks
-    except Exception as e:
-        raise RuntimeError(f"Error breaking text into chunks: {e}")
+# Extract text from PDF
+extracted_text = extract_text_from_pdf(PDF_PATH)
 
-def create_and_upsert_embeddings(chunks):
-    try:
-        res = openai.Embedding.create(
-            input=chunks,
-            engine=embed_model
-        )
-        index_name = "regqa"
+# Break extracted text into chunks for embedding
+CHUNK_SIZE = 10000
+OVERLAP_SIZE = 5000
+chunks = [extracted_text[i:i + CHUNK_SIZE] for i in range(0, len(extracted_text), CHUNK_SIZE - OVERLAP_SIZE)]
 
-        if index_name not in pinecone.list_indexes():
-            pinecone.create_index(
-                index_name,
-                dimension=len(res['data'][0]['embedding']),
-                metric='cosine'
-            )
+# Create embeddings for the chunks
+EMBED_MODEL = "text-embedding-ada-002"
+embedding_response = openai.Embedding.create(input=chunks, engine=EMBED_MODEL)
 
-        index = pinecone.Index(index_name=index_name)
+# Define Pinecone index details and create index
+INDEX_NAME = "regqa"
+if INDEX_NAME not in pinecone.list_indexes():
+    pinecone.create_index(INDEX_NAME, dimension=len(embedding_response['data'][0]['embedding']), metric='cosine')
 
-        to_upsert = [(f"id{i}", res['data'][i]['embedding'], {"text": chunks[i]})
-                     for i in range(len(res['data']))]
-        index.upsert(vectors=to_upsert)
+index = pinecone.Index(index_name=INDEX_NAME)
 
-        return index
-    except Exception as e:
-        raise RuntimeError(f"Error creating/upserting embeddings: {e}")
+# Display Pinecone index statistics
+print(index.describe_index_stats())
 
-def generate_query_with_context(query):
-    try:
-        res = openai.Embedding.create(
-            input=[query],
-            engine=embed_model
-        )
-        xq = res['data'][0]['embedding']
-        res = index.query(xq, top_k=1, include_metadata=True)
-        context = res['matches'][0]['metadata']['text']
-        prompt = "Answer the question based on the context below.\n\ncontext:\n" + \
-            context + f"\n\nQuestion: {query}\n\nAnswer:"
-        return prompt
-    except Exception as e:
-        raise RuntimeError(f"Error generating query context: {e}")
+# Upsert vectors into the index
+to_upsert = [(f"id{i}", embedding_response['data'][i]['embedding'], {"text": chunks[i]}) for i in range(len(embedding_response['data']))]
+index.upsert(vectors=to_upsert)
 
-def complete(prompt):
-    try:
-        res = openai.Completion.create(
-            engine='text-davinci-003',
-            prompt=prompt,
-            temperature=0,
-            max_tokens=400,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0,
-            stop=None
-        )
-        return res['choices'][0]['text'].strip()
-    except Exception as e:
-        raise RuntimeError(f"Error completing query: {e}")
+# Perform query retrieval and generate completion
+query_context = retrieve_text(QUERY, EMBED_MODEL, index)
+completion = generate_completion(query_context)
+print(completion)
 
-if __name__ == '__main__':
-    app.run(debug=True)
+# Delete Pinecone index after use
+pinecone.delete_index(INDEX_NAME)
