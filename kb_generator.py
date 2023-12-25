@@ -3,7 +3,6 @@ import dotenv
 import openai
 import pinecone
 import psycopg2
-import PyPDF2
 
 # Load environment variables
 dotenv.load_dotenv(dotenv_path="./.env")
