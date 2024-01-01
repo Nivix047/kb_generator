@@ -4,18 +4,20 @@ import openai
 import pinecone
 import PyPDF2
 
-# Load environment variables from .env file
+# Load environment variables
 dotenv.load_dotenv(dotenv_path=".env")
 
+# Function to extract text from a PDF file
 def extract_text_from_pdf(pdf_path):
     try:
         with open(pdf_path, 'rb') as pdf_file_obj:
             pdf_reader = PyPDF2.PdfReader(pdf_file_obj)
             text = ""
+            # Reading each page of the PDF
             for page_num in range(len(pdf_reader.pages)):
                 page = pdf_reader.pages[page_num]
                 text += page.extract_text()
-        print("Text sucessfully extracted from PDF.")
+        print("Text successfully extracted from PDF.")
         return text
     except FileNotFoundError:
         print(f"Error: The file at {pdf_path} was not found.")
@@ -24,15 +26,22 @@ def extract_text_from_pdf(pdf_path):
         print(f"An error occurred while reading the PDF: {e}")
         return None
 
+# Function to chunk text for processing
+def chunk_text(text, chunk_size=10000, overlap_size=5000):
+    # Splitting text into smaller parts
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size - overlap_size)]
+
+# Main function
 def main():
     try:
-        # Initialize OpenAI with the API key
+        # Initialize API keys for OpenAI and Pinecone
         openai.api_key = os.getenv("OPENAI_API_SECRET")
-        if not openai.api_key:
-            raise ValueError("OpenAI API key not found. Please check your .env file.")
+        pinecone_api_key = os.getenv("PINECONE_API_KEY")
+        if not openai.api_key or not pinecone_api_key:
+            raise ValueError("API keys not found. Please check your .env file.")
 
-        # Extract text from the PDF file
-        pdf_path = os.getenv("PDF_PATH")  # Get the path from the environment variable
+        # Extract text from the specified PDF file
+        pdf_path = os.getenv("PDF_PATH")
         if not pdf_path:
             raise ValueError("PDF path not found in the environment variables.")
         text = extract_text_from_pdf(pdf_path)
@@ -40,29 +49,23 @@ def main():
             raise ValueError("Failed to extract text from the PDF.")
 
         # Initialize Pinecone
-        pinecone_api_key = os.getenv("PINECONE_API_KEY")
-        if not pinecone_api_key:
-            raise ValueError("Pinecone API key not found. Please check your .env file.")
         pinecone.init(api_key=pinecone_api_key, environment="us-west1-gcp-free")
+        chunks = chunk_text(text)
 
-        # Create embeddings for the text
+        # Define embedding model and Pinecone index
         embed_model = "text-embedding-ada-002"
-        res = openai.Embedding.create(input=[text], engine=embed_model)
-
-        # Check if Pinecone index exists, create if not
         index_name = "regqa"
         if index_name not in pinecone.list_indexes():
-            pinecone.create_index(index_name, dimension=len(res['data'][0]['embedding']), metric='cosine')
-
-        # Create Pinecone index
+            pinecone.create_index(index_name, dimension=512, metric='cosine')
         index = pinecone.Index(index_name=index_name)
 
-        # Upsert text into the index
-        to_upsert = [("id", res['data'][0]['embedding'], {"text": text})]
-        index.upsert(vectors=to_upsert)
+        # Process and upsert each chunk into the Pinecone index
+        for i, chunk in enumerate(chunks):
+            res = openai.Embedding.create(input=[chunk], engine=embed_model)
+            to_upsert = [(f"id{i}", res['data'][0]['embedding'], {"text": chunk})]
+            index.upsert(vectors=to_upsert)
 
-        # Save index name to environment for retrieval
-        os.environ["PINECONE_INDEX_NAME"] = index_name
+        print("Data successfully upserted into the Pinecone index.")
 
     except ValueError as ve:
         print(ve)
