@@ -24,7 +24,7 @@ def retrieve(query, index):
 def complete(prompt):
     try:
         if prompt:
-            response = openai.Completion.create(engine='text-davinci-003', prompt=prompt, max_tokens=400)
+            response = openai.Completion.create(engine='gpt-3.5-turbo-instruct', prompt=prompt, max_tokens=400)
             return response['choices'][0]['text'].strip()
         else:
             return "No completion available due to missing prompt."
