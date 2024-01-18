@@ -61,7 +61,7 @@ def main():
         # Load the Pinecone index
         index = pinecone.Index(index_name=index_name)
 
-        # Example usage of the retrieve and complete functions
+        # Example usage of the retrieve and complete functions / Insert your query here:
         query = "What do $gt and $gte do in MongoDB?"
         query_with_context = retrieve(query, index)
         completion = complete(query_with_context)
